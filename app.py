@@ -50,7 +50,14 @@ import streamlit as st
 
 APP_TITLE = "Calorie Coach"
 APP_TAGLINE = "A calorie tool built on 85,000+ real sensor windows"
-DB_PATH = Path(__file__).parent / "Data" / "pipeline.db"
+DB_URL = "https://github.com/catalinasara/Data-Processing-Project/releases/download/v1.0.0/pipeline.db"
+
+DB_PATH = Path(__file__).parent / "pipeline.db"
+
+if not DB_PATH.exists():
+    st.info("Downloading database... first run only.")
+    urllib.request.urlretrieve(DB_URL, DB_PATH)
+    st.success("Database downloaded.")
 
 # NTNU Trondheim coordinates - matches where HARTH/HAR70+ data was collected.
 TRONDHEIM_LAT = 63.4305
