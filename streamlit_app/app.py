@@ -50,7 +50,7 @@ import streamlit as st
 
 APP_TITLE = "BurnWise"
 APP_TAGLINE = "A calorie tool built on 85,000+ real sensor windows"
-DB_URL = "https://github.com/catalinasara/msba305-health-sensor-pipeline/releases/download/v1.1.0/pipeline.db""
+DB_URL = "https://github.com/catalinasara/msba305-health-sensor-pipeline/releases/download/v1.1.0/pipeline.db"
 DB_PATH = Path(__file__).parent / "pipeline.db"
 
 if not DB_PATH.exists():
