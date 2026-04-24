@@ -1,4 +1,4 @@
-# MSBA 305 Data Processing Project: Wearable Activity Pipeline
+# MSBA 305 Health Sensor Data Processing Pipeline
 
 A full batch data processing pipeline combining wearable sensor data, weather, and activity intensity references into a query-ready analytical layer, plus a Streamlit app for calorie estimation and activity recommendations.
 
