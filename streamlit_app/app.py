@@ -45,7 +45,7 @@ BAD_WEATHER_CODES = (
     set(range(51, 68)) | set(range(71, 78)) | set(range(80, 83)) | {95, 96, 99}
 )
 
-EFFORT_LEVELS = {"Easy": 0.85, "Steady": 1.00, "Pushing": 1.20}
+EFFORT_LEVELS = {"Easy": 0.85, "Steady": 1.00, "Pushing": 1.55}
 
 PICKER_MET_FLOOR = 2.0
 
