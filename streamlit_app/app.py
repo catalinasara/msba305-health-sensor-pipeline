@@ -1128,486 +1128,566 @@ If time is the constraint, intensity is the lever. If intensity is the constrain
 # -----------------------------------------------------------------------------
 
 with tab_about:
-    st.markdown("### What the data says before the app gives advice")
+    # -----------------------------------------------------------------------------
+    # Intro
+    # -----------------------------------------------------------------------------
+    st.markdown("### The data story behind every estimate")
     st.markdown(
-        f"<p style='color:{TEXT_SECONDARY}; margin-bottom:1.2rem;'>"
-        "This section turns the pipeline outputs into a three-part analytical story: "
-        "who we measured, whether the same activity label means the same physical signal, "
-        "and what that means for calorie recommendations."
+        f"<p style='color:{TEXT_SECONDARY}; margin-bottom:1.5rem; max-width:780px;'>"
+        "Every number BurnWise shows you traces back to real sensor data from real people. "
+        "This tab walks through three questions the pipeline answered on the way to the app: "
+        "who we measured, whether a shared label means the same thing across ages, and what "
+        "that means for the calorie numbers we show you. Each view is interactive — change the "
+        "filters and see how the picture shifts."
         "</p>",
         unsafe_allow_html=True,
     )
 
-    footprint = load_about_footprint()
-    activity_mix = load_about_activity_mix()
-    walking_signal = load_about_walking_signal()
-    shared_signal = load_about_shared_signal()
-    cal_rate = load_about_calorie_rates()
+    # Shared data loads
+    mix = load_intensity_mix()
+    harth_mix = mix[mix["cohort"] == "HARTH"]
+    har70_mix = mix[mix["cohort"] == "HAR70+"]
 
-    # -------------------------------------------------------------------------
-    # Summary metrics
-    # -------------------------------------------------------------------------
+    size_ratio = prov["windows_harth"] / max(prov["windows_har70"], 1)
+    harth_activities = all_activities[all_activities["cohort"] == "HARTH"]["activity_name"].nunique()
+    har70_activities = all_activities[all_activities["cohort"] == "HAR70+"]["activity_name"].nunique()
+    har70_vigorous = int(har70_mix[har70_mix["intensity_class"] == "vigorous"]["n_windows"].sum())
+    harth_vigorous = int(harth_mix[harth_mix["intensity_class"] == "vigorous"]["n_windows"].sum())
 
-    harth_fp = footprint[footprint["cohort"] == "HARTH"].iloc[0]
-    har70_fp = footprint[footprint["cohort"] == "HAR70+"].iloc[0]
+    # -----------------------------------------------------------------------------
+    # Headline stats
+    # -----------------------------------------------------------------------------
+    st.markdown("#### At a glance")
 
-    window_gap = harth_fp["n_windows"] / max(har70_fp["n_windows"], 1)
-    hour_gap = harth_fp["recording_hours"] / max(har70_fp["recording_hours"], 1)
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        st.markdown(headline_stat(
+            f"{prov['n_windows']:,}",
+            "Sensor windows",
+            f"Each window is 2 seconds of movement data. "
+            f"{prov['windows_harth']:,} from working-age adults, {prov['windows_har70']:,} from adults 70+."
+        ), unsafe_allow_html=True)
+    with h2:
+        st.markdown(headline_stat(
+            f"{size_ratio:.1f}×",
+            "Cohort size gap",
+            f"HARTH has {size_ratio:.1f}× more windows than HAR70+. "
+            "Any cross-cohort number carries this caveat."
+        ), unsafe_allow_html=True)
+    with h3:
+        st.markdown(headline_stat(
+            f"{har70_activities} vs {harth_activities}",
+            "Activity coverage",
+            f"HAR70+ shows {har70_activities} activities. HARTH shows {harth_activities}. "
+            "Running and cycling only exist in HARTH data."
+        ), unsafe_allow_html=True)
+    with h4:
+        st.markdown(headline_stat(
+            f"{har70_vigorous:,}",
+            "Vigorous HAR70+ windows",
+            f"Zero. Every vigorous data point comes from HARTH ({harth_vigorous:,} windows). "
+            "That gap shapes what the app can recommend."
+        ), unsafe_allow_html=True)
 
-    walking_medians = walking_signal.groupby("cohort")["thigh_z_std"].median()
-    if "HARTH" in walking_medians and "HAR70+" in walking_medians:
-        walking_gap = (
-            (walking_medians["HAR70+"] - walking_medians["HARTH"])
-            / walking_medians["HARTH"]
-            * 100
-        )
-    else:
-        walking_gap = 0
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-    cal_pivot_for_delta = cal_rate.pivot(
-        index="activity_name",
-        columns="cohort",
-        values="kcal_per_kg_hour",
-    )
+    # =============================================================================
+    # ACT 1 — Who are we measuring?
+    # =============================================================================
+    st.markdown(f"""
+<div style='border-left:3px solid {ACCENT}; padding-left:1rem; margin:1rem 0 1.5rem 0;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.75rem;
+              letter-spacing:0.25em; text-transform:uppercase; margin-bottom:0.3rem;'>Act 1</div>
+  <div style='color:{TEXT_PRIMARY}; font-family:"Oswald", sans-serif; font-size:1.5rem;
+              font-weight:500;'>Who are we measuring?</div>
+  <div style='color:{TEXT_SECONDARY}; font-size:0.9rem; margin-top:0.4rem; max-width:720px;'>
+    Same sensors. Same labels. Same protocol. The numbers say the two groups behave very
+    differently once they start moving.
+  </div>
+</div>
+    """, unsafe_allow_html=True)
 
-    shared_cal = cal_pivot_for_delta.dropna().copy()
-    if not shared_cal.empty:
-        shared_cal["delta_pct"] = (
-            (shared_cal["HAR70+"] - shared_cal["HARTH"])
-            / shared_cal["HARTH"]
-            * 100
-        )
-        max_abs_delta = shared_cal["delta_pct"].abs().max()
-    else:
-        max_abs_delta = 0
-
-    s1, s2, s3 = st.columns(3)
-
-    with s1:
-        st.markdown(
-            headline_stat(
-                f"{window_gap:.1f}×",
-                "Recording footprint gap",
-                f"HARTH has {window_gap:.1f}× more 2-second windows than HAR70+. "
-                "This means cohort comparisons need context."
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with s2:
-        st.markdown(
-            headline_stat(
-                f"{walking_gap:.0f}%",
-                "Walking signal gap",
-                "HAR70+ walking shows lower thigh movement signal than HARTH. "
-                "Same label, different physical pattern."
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with s3:
-        st.markdown(
-            headline_stat(
-                f"{max_abs_delta:.2f}%",
-                "Max shared-activity calorie gap",
-                "After calibration, shared activities stay closely aligned across cohorts."
-            ),
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # -------------------------------------------------------------------------
-    # Narrative selector
-    # -------------------------------------------------------------------------
-
-    act = st.radio(
-        "Choose the analytical view",
-        options=[
-            "Act 1 — Cohort landscape",
-            "Act 2 — Same label, different signal",
-            "Act 3 — App output and fairness",
-        ],
+    act1_metric = st.radio(
+        "What to show",
+        options=["Subjects", "Recording hours", "2-second windows"],
         horizontal=True,
+        key="act1_metric",
+        label_visibility="collapsed",
     )
 
-    # -------------------------------------------------------------------------
-    # ACT 1
-    # -------------------------------------------------------------------------
+    # Compute footprint per cohort
+    footprint = all_activities.groupby("cohort").agg(
+        n_subjects=("activity_name", lambda _: 0),  # placeholder, filled below
+        n_windows=("n_windows", "sum"),
+    ).reset_index()
 
-    if act == "Act 1 — Cohort landscape":
-        st.markdown("#### Act 1 — Who are we measuring?")
+    # We already have subjects per cohort from prov
+    footprint["n_subjects"] = footprint["cohort"].map({
+        "HARTH": prov["n_harth"],
+        "HAR70+": prov["n_har70"],
+    })
+    # Recording hours: each window is 2 seconds
+    footprint["recording_hours"] = (footprint["n_windows"] * 2 / 3600).round(1)
 
-        st.markdown(
-            f"<p style='color:{TEXT_SECONDARY}; font-size:0.9rem;'>"
-            "The two datasets use similar sensors and activity labels, but their recording "
-            "footprints and activity mixes are not balanced. This matters because the app "
-            "should not treat both cohorts as if they represent the same daily routine."
-            "</p>",
-            unsafe_allow_html=True,
-        )
+    metric_map = {
+        "Subjects": ("n_subjects", "subjects"),
+        "Recording hours": ("recording_hours", "hours"),
+        "2-second windows": ("n_windows", "windows"),
+    }
+    metric_col, metric_unit = metric_map[act1_metric]
 
-        left, right = st.columns([1, 1.45])
+    col_left, col_right = st.columns([1, 1.4])
 
-        with left:
-            metric_choice = st.selectbox(
-                "Footprint metric",
-                options=["n_subjects", "recording_hours", "n_windows"],
-                format_func=lambda x: {
-                    "n_subjects": "Subjects",
-                    "recording_hours": "Recording hours",
-                    "n_windows": "2-second windows",
-                }[x],
-            )
-
-            metric_label = {
-                "n_subjects": "Subjects",
-                "recording_hours": "Recording hours",
-                "n_windows": "2-second windows",
-            }[metric_choice]
-
-            fig = go.Figure()
+    with col_left:
+        fig = go.Figure()
+        for _, r in footprint.iterrows():
+            color = COLOR_HARTH if r["cohort"] == "HARTH" else COLOR_HAR70
             fig.add_trace(go.Bar(
-                x=footprint["cohort"],
-                y=footprint[metric_choice],
-                marker=dict(
-                    color=[
-                        COLOR_HARTH if c == "HARTH" else COLOR_HAR70
-                        for c in footprint["cohort"]
-                    ],
-                    line=dict(color=BORDER_STRONG, width=1),
-                ),
-                text=[
-                    f"{v:,.0f}" for v in footprint[metric_choice]
-                ],
+                x=[r[metric_col]],
+                y=[r["cohort"]],
+                orientation="h",
+                marker=dict(color=color, line=dict(color=color, width=1)),
+                text=[f"{r[metric_col]:,.0f} {metric_unit}"],
                 textposition="outside",
-                hovertemplate="<b>%{x}</b><br>%{y:,.0f}<extra></extra>",
-            ))
-            fig.update_layout(
-                title=f"Recording footprint — {metric_label}",
-                xaxis_title="Cohort",
-                yaxis_title=metric_label,
+                textfont=dict(color=TEXT_PRIMARY, size=12),
                 showlegend=False,
-            )
-            st.plotly_chart(style_plot(fig, height=380), use_container_width=True)
-
-        with right:
-            top_n = st.slider(
-                "Show top activities",
-                min_value=4,
-                max_value=12,
-                value=8,
-                step=1,
-            )
-
-            mix_top = (
-                activity_mix.sort_values(["cohort", "pct"], ascending=[True, False])
-                .groupby("cohort")
-                .head(top_n)
-                .copy()
-            )
-            mix_top["display_name"] = mix_top["activity_name"].map(display_name)
-
-            fig = go.Figure()
-            for cohort_name, color in [("HARTH", COLOR_HARTH), ("HAR70+", COLOR_HAR70)]:
-                sub = mix_top[mix_top["cohort"] == cohort_name].sort_values("pct")
-                fig.add_trace(go.Bar(
-                    name=cohort_name,
-                    x=sub["pct"],
-                    y=sub["display_name"],
-                    orientation="h",
-                    marker=dict(color=color, line=dict(color=color, width=1)),
-                    text=[f"{p:.1f}%" for p in sub["pct"]],
-                    textposition="outside",
-                    hovertemplate="<b>%{y}</b><br>%{x:.1f}% of windows<extra></extra>",
-                ))
-
-            fig.update_layout(
-                title="Activity mix by cohort",
-                barmode="group",
-                xaxis_title="% of cohort windows",
-                yaxis_title="",
-            )
-            st.plotly_chart(style_plot(fig, height=430), use_container_width=True)
-
-        with st.expander("Interpretation"):
-            st.markdown(f"""
-HARTH has a much larger recording footprint than HAR70+, especially in total windows and recording hours. The participant gap is smaller than the window gap, which means the imbalance is not just about how many people were included, but also how much movement data was captured.
-
-The activity mix also differs across cohorts. HARTH contains a broader activity range, while HAR70+ is more concentrated in lower-intensity daily movement. This is why the app separates users by reference group instead of pooling everyone into one generic benchmark.
-            """)
-
-    # -------------------------------------------------------------------------
-    # ACT 2
-    # -------------------------------------------------------------------------
-
-    elif act == "Act 2 — Same label, different signal":
-        st.markdown("#### Act 2 — Does the same label mean the same movement?")
-
-        st.markdown(
-            f"<p style='color:{TEXT_SECONDARY}; font-size:0.9rem;'>"
-            "This view checks whether shared activity labels behave the same physically. "
-            "The key signal is thigh_z_std, which captures variation in vertical thigh movement."
-            "</p>",
-            unsafe_allow_html=True,
-        )
-
-        left, right = st.columns([1, 1.35])
-
-        with left:
-            fig = go.Figure()
-
-            for cohort_name, color in [("HARTH", COLOR_HARTH), ("HAR70+", COLOR_HAR70)]:
-                vals = walking_signal[walking_signal["cohort"] == cohort_name]["thigh_z_std"]
-                fig.add_trace(go.Histogram(
-                    x=vals,
-                    name=cohort_name,
-                    opacity=0.72,
-                    marker=dict(color=color),
-                    histnorm="probability density",
-                    nbinsx=60,
-                    hovertemplate="<b>" + cohort_name + "</b><br>thigh_z_std: %{x:.3f}<extra></extra>",
-                ))
-
-                if len(vals) > 0:
-                    fig.add_vline(
-                        x=vals.median(),
-                        line_width=2,
-                        line_dash="dash",
-                        line_color=color,
-                        annotation_text=f"{cohort_name} median",
-                        annotation_position="top",
-                    )
-
-            fig.update_layout(
-                title="Walking signal distribution",
-                barmode="overlay",
-                xaxis_title="thigh_z_std during walking",
-                yaxis_title="Density",
-            )
-            st.plotly_chart(style_plot(fig, height=430), use_container_width=True)
-
-        with right:
-            signal_pivot = (
-                shared_signal.pivot(
-                    index="activity_name",
-                    columns="cohort",
-                    values="mean_thigh_z_std",
-                )
-                .dropna()
-                .copy()
-            )
-
-            signal_pivot["delta_pct"] = (
-                (signal_pivot["HAR70+"] - signal_pivot["HARTH"])
-                / signal_pivot["HARTH"]
-                * 100
-            )
-            signal_pivot = signal_pivot.sort_values("delta_pct")
-            signal_pivot["display_name"] = signal_pivot.index.map(display_name)
-
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=signal_pivot["delta_pct"],
-                y=signal_pivot["display_name"],
-                orientation="h",
-                marker=dict(
-                    color=[
-                        COLOR_HAR70 if d < 0 else ACCENT
-                        for d in signal_pivot["delta_pct"]
-                    ],
-                    line=dict(color=BORDER_SOFT, width=1),
-                ),
-                text=[f"{d:+.0f}%" for d in signal_pivot["delta_pct"]],
-                textposition="outside",
-                hovertemplate="<b>%{y}</b><br>HAR70+ vs HARTH: %{x:+.1f}%<extra></extra>",
+                hovertemplate="<b>%{y}</b><br>" + f"{metric_col}: " + "%{x:,}<extra></extra>",
             ))
-            fig.add_vline(
-                x=0,
-                line_width=1,
-                line_dash="dot",
-                line_color=TEXT_MUTED,
-            )
-            fig.update_layout(
-                title="Shared-activity movement gap",
-                xaxis_title="HAR70+ vs HARTH mean thigh_z_std difference",
-                yaxis_title="",
-            )
-            st.plotly_chart(style_plot(fig, height=430), use_container_width=True)
+        fig.update_layout(
+            title=f"Recording footprint: {act1_metric.lower()}",
+            xaxis_title=act1_metric, yaxis_title="",
+        )
+        st.plotly_chart(style_plot(fig, height=260), use_container_width=True)
 
-        with st.expander("Interpretation"):
+    with col_right:
+        # Activity mix: stacked percentage bar per cohort
+        mix_pivot = all_activities.copy()
+        totals = mix_pivot.groupby("cohort")["n_windows"].transform("sum")
+        mix_pivot["pct"] = mix_pivot["n_windows"] / totals * 100
+        mix_pivot["display"] = mix_pivot["activity_name"].map(display_name)
+
+        # Activity palette — categorical, distinct, works on dark bg
+        act_order = (all_activities[all_activities["cohort"] == "HARTH"]
+                     .sort_values("n_windows", ascending=False)["activity_name"].tolist())
+        # Add any activities unique to HAR70+ at the end
+        for a in all_activities["activity_name"].unique():
+            if a not in act_order:
+                act_order.append(a)
+
+        act_palette = [
+            "#9AE62F", "#4FC3F7", "#FFB547", "#E879F9", "#60A5FA",
+            "#34D399", "#F87171", "#A78BFA", "#FB923C", "#22D3EE",
+            "#FBBF24", "#F472B6",
+        ]
+
+        fig = go.Figure()
+        for i, act in enumerate(act_order):
+            sub = mix_pivot[mix_pivot["activity_name"] == act]
+            if sub.empty:
+                continue
+            fig.add_trace(go.Bar(
+                name=display_name(act),
+                y=sub["cohort"],
+                x=sub["pct"],
+                orientation="h",
+                marker=dict(color=act_palette[i % len(act_palette)]),
+                hovertemplate=(
+                    "<b>%{y}</b><br>" + display_name(act) +
+                    ": %{x:.1f}%<extra></extra>"
+                ),
+            ))
+        fig.update_layout(
+            title="Activity mix per cohort (% of windows)",
+            barmode="stack",
+            xaxis_title="% of cohort's windows",
+            yaxis_title="",
+            legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
+                        font=dict(size=10)),
+        )
+        st.plotly_chart(style_plot(fig, height=320), use_container_width=True)
+
+    with st.expander("What this means"):
+        harth_hours = int(footprint[footprint["cohort"] == "HARTH"]["recording_hours"].iloc[0])
+        har70_hours = int(footprint[footprint["cohort"] == "HAR70+"]["recording_hours"].iloc[0])
+        st.markdown(f"""
+HARTH captured roughly **{harth_hours} hours** of recording across {prov['n_harth']} working-age adults. HAR70+ captured **{har70_hours} hours** across {prov['n_har70']} adults 70+. The gap in windows is wider than the gap in subjects, so HAR70+ subjects contributed shorter sessions on average.
+
+The activity mix tells a second story. Walking dominates HAR70+, while HARTH spreads more evenly across walking, sitting, and other activities. That's not a data flaw, it reflects what the two populations actually did during the recordings. Working-age adults were observed during their full workday (lots of sitting), older adults were observed during free-living movement sessions (mostly walking).
+
+**Why this matters for BurnWise:** these two groups aren't interchangeable. Pooling them into a single "reference human" would hide real behavior differences. That's why the app picks one cohort based on your age and shows you numbers grounded in that group's actual data.
+        """)
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    # =============================================================================
+    # ACT 2 — Does "walking" mean the same thing at 30 and 75?
+    # =============================================================================
+    st.markdown(f"""
+<div style='border-left:3px solid {ACCENT}; padding-left:1rem; margin:1rem 0 1.5rem 0;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.75rem;
+              letter-spacing:0.25em; text-transform:uppercase; margin-bottom:0.3rem;'>Act 2</div>
+  <div style='color:{TEXT_PRIMARY}; font-family:"Oswald", sans-serif; font-size:1.5rem;
+              font-weight:500;'>Does "walking" mean the same thing at 30 and at 75?</div>
+  <div style='color:{TEXT_SECONDARY}; font-size:0.9rem; margin-top:0.4rem; max-width:720px;'>
+    The sensor sees the physical motion, not the label. When a 75-year-old and a 30-year-old
+    both "walk," the sensor data tells us how similar that walking really is.
+  </div>
+</div>
+    """, unsafe_allow_html=True)
+
+    # Load walking thigh_z_std distribution directly from DB
+    conn_local = get_connection()
+    walking_signal = pd.read_sql("""
+        SELECT f.source, f.thigh_z_std
+        FROM fact_activity_window f
+        JOIN dim_activity a ON f.activity_id = a.activity_id
+        WHERE a.activity_name = 'walking'
+    """, conn_local)
+
+    # Compare across shared activities
+    shared_signal = pd.read_sql("""
+        SELECT a.activity_name, f.source,
+               COUNT(*) AS n_windows,
+               ROUND(AVG(f.thigh_z_std), 4) AS mean_std
+        FROM fact_activity_window f
+        JOIN dim_activity a ON f.activity_id = a.activity_id
+        GROUP BY a.activity_name, f.source
+    """, conn_local)
+
+    # Keep only activities with data in both cohorts
+    both_cohorts = (shared_signal.groupby("activity_name")["source"].nunique()
+                    .loc[lambda s: s == 2].index.tolist())
+    shared_signal = shared_signal[shared_signal["activity_name"].isin(both_cohorts)]
+
+    act2_view = st.radio(
+        "View",
+        options=["Walking intensity distribution", "Gap across all shared activities"],
+        horizontal=True,
+        key="act2_view",
+        label_visibility="collapsed",
+    )
+
+    if act2_view == "Walking intensity distribution":
+        fig = go.Figure()
+        for cohort_name, color in [("HARTH", COLOR_HARTH), ("HAR70+", COLOR_HAR70)]:
+            vals = walking_signal[walking_signal["source"] == cohort_name]["thigh_z_std"]
+            if vals.empty:
+                continue
+            fig.add_trace(go.Histogram(
+                x=vals,
+                name=f"{cohort_name} (n={len(vals):,})",
+                marker=dict(color=color, line=dict(color=color, width=0)),
+                opacity=0.65,
+                nbinsx=60,
+                histnorm="probability density",
+                hovertemplate="<b>" + cohort_name + "</b><br>std: %{x:.3f}g<br>density: %{y:.2f}<extra></extra>",
+            ))
+            median = vals.median()
+            fig.add_vline(x=median, line_dash="dash", line_color=color, line_width=2,
+                          annotation_text=f"{cohort_name} median",
+                          annotation_position="top",
+                          annotation_font=dict(color=color, size=10))
+
+        fig.update_layout(
+            title="How vigorously does each cohort walk? (thigh vertical motion)",
+            xaxis_title="Thigh vertical acceleration std (g)",
+            yaxis_title="Density",
+            barmode="overlay",
+        )
+        # Trim x-axis to meaningful range
+        q99 = walking_signal["thigh_z_std"].quantile(0.99)
+        fig.update_xaxes(range=[0, q99])
+        st.plotly_chart(style_plot(fig, height=420), use_container_width=True)
+
+        with st.expander("What this means"):
+            harth_median = walking_signal[walking_signal["source"] == "HARTH"]["thigh_z_std"].median()
+            har70_median = walking_signal[walking_signal["source"] == "HAR70+"]["thigh_z_std"].median()
+            gap_pct = (harth_median - har70_median) / harth_median * 100 if harth_median > 0 else 0
             st.markdown(f"""
-The same activity label does not always mean the same physical signal. Walking in HAR70+ is shifted toward lower thigh movement variation than walking in HARTH, even though both rows are labeled as walking.
+Both distributions are labeled "walking." The sensor disagrees. HARTH's walking produces a thigh acceleration std of **{harth_median:.3f}g** at the median. HAR70+'s walking produces **{har70_median:.3f}g** — about **{gap_pct:.0f}% lower**.
 
-That matters because a wearable platform should not rely only on the activity label. A label says *what* the person was doing, but the sensor signal shows *how* they were doing it. This supports the need for calibration instead of assuming one fixed label has one fixed intensity for every age group.
+That gap is physical. Older adults walk with a flatter, more controlled gait — less vertical bounce per step. A classifier trained only on HARTH data would see HAR70+ walking and reasonably guess it was a slower, lower-intensity activity, because that's what the numbers look like from the outside.
+
+**Why this matters for BurnWise:** a single MET value for "walking" hides this. That's why the pipeline calibrates intensity within each cohort — so a HAR70+ walking window at their typical intensity doesn't get penalized for producing smaller numbers than a HARTH window at HARTH's typical intensity.
             """)
 
-    # -------------------------------------------------------------------------
-    # ACT 3
-    # -------------------------------------------------------------------------
+    else:  # Gap across all shared activities
+        pivot_s = (shared_signal.pivot(index="activity_name", columns="source", values="mean_std")
+                                .fillna(0))
+        pivot_s["delta_pct"] = ((pivot_s["HAR70+"] - pivot_s["HARTH"]) / pivot_s["HARTH"] * 100).round(1)
+        pivot_s = pivot_s.sort_values("HARTH", ascending=True)
+        pivot_s["display"] = [display_name(a) for a in pivot_s.index]
 
-    else:
-        st.markdown("#### Act 3 — What does the app tell each user?")
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            name="HARTH", y=pivot_s["display"], x=pivot_s["HARTH"],
+            orientation="h",
+            marker=dict(color=COLOR_HARTH, line=dict(color=COLOR_HARTH, width=1)),
+            hovertemplate="<b>%{y}</b><br>HARTH: %{x:.3f}g<extra></extra>",
+        ))
+        fig.add_trace(go.Bar(
+            name="HAR70+", y=pivot_s["display"], x=pivot_s["HAR70+"],
+            orientation="h",
+            marker=dict(color=COLOR_HAR70, line=dict(color=COLOR_HAR70, width=1)),
+            hovertemplate="<b>%{y}</b><br>HAR70+: %{x:.3f}g<extra></extra>",
+        ))
 
-        st.markdown(
-            f"<p style='color:{TEXT_SECONDARY}; font-size:0.9rem;'>"
-            "This view connects the backend pipeline to the user-facing calorie tool. "
-            "It shows which activities have the highest calorie rate by cohort, then checks "
-            "whether shared activities remain fair after calibration."
-            "</p>",
-            unsafe_allow_html=True,
+        # Annotate the delta % next to each pair
+        for i, act in enumerate(pivot_s.index):
+            d = pivot_s.loc[act, "delta_pct"]
+            max_val = max(pivot_s.loc[act, "HARTH"], pivot_s.loc[act, "HAR70+"])
+            sign = "+" if d >= 0 else ""
+            fig.add_annotation(
+                x=max_val * 1.08, y=i,
+                text=f"{sign}{d:.0f}%",
+                showarrow=False,
+                font=dict(color=TEXT_MUTED, size=11),
+                xanchor="left",
+            )
+
+        fig.update_layout(
+            title="Intensity gap by activity: HAR70+ vs HARTH (mean thigh_z std)",
+            barmode="group",
+            xaxis_title="Mean thigh vertical std (g)",
+            yaxis_title="",
         )
+        st.plotly_chart(style_plot(fig, height=max(350, 60 + 45 * len(pivot_s))),
+                        use_container_width=True)
 
-        left, right = st.columns([1.2, 1])
+        with st.expander("What this means"):
+            st.markdown("""
+The pattern generalizes beyond walking. Activities that involve more movement (walking, stairs, shuffling) show the biggest gap between cohorts — HAR70+ consistently produces a lower-intensity sensor signal. Activities with less movement (sitting, lying, standing) show almost no gap.
 
-        with left:
-            show_mode = st.radio(
-                "Ranking view",
-                options=["All activities", "Top 6 per cohort"],
-                horizontal=True,
-            )
+That's intuitive. Sitting still looks like sitting still regardless of age. But the way you walk, climb stairs, or shuffle is where age actually shows up in the data.
 
-            rank_df = cal_rate.copy()
-            rank_df["display_name"] = rank_df["activity_name"].map(display_name)
+**Why this matters for BurnWise:** the intensity gap is predictable and systematic, not random noise. That makes it calibratable. Instead of trying to correct for age directly (which gets ethically messy fast), the pipeline calibrates per cohort per activity — each window is scored against its own reference distribution, so a HAR70+ window at HAR70+ intensity norms gets a fair read.
+            """)
 
-            if show_mode == "Top 6 per cohort":
-                rank_df = (
-                    rank_df.sort_values(["cohort", "kcal_per_kg_hour"], ascending=[True, False])
-                    .groupby("cohort")
-                    .head(6)
-                    .copy()
-                )
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-            fig = go.Figure()
+    # =============================================================================
+    # ACT 3 — What does the app tell each user?
+    # =============================================================================
+    st.markdown(f"""
+<div style='border-left:3px solid {ACCENT}; padding-left:1rem; margin:1rem 0 1.5rem 0;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.75rem;
+              letter-spacing:0.25em; text-transform:uppercase; margin-bottom:0.3rem;'>Act 3</div>
+  <div style='color:{TEXT_PRIMARY}; font-family:"Oswald", sans-serif; font-size:1.5rem;
+              font-weight:500;'>What does the app tell each user?</div>
+  <div style='color:{TEXT_SECONDARY}; font-size:0.9rem; margin-top:0.4rem; max-width:720px;'>
+    Calibration has a job: keep the app honest. Different cohorts should see different
+    rankings (because their activity mix is different) but identical activities should
+    produce comparable calorie estimates.
+  </div>
+</div>
+    """, unsafe_allow_html=True)
 
-            for cohort_name, color in [("HARTH", COLOR_HARTH), ("HAR70+", COLOR_HAR70)]:
-                sub = rank_df[rank_df["cohort"] == cohort_name].sort_values("kcal_per_kg_hour")
-                fig.add_trace(go.Bar(
-                    name=cohort_name,
-                    x=sub["kcal_per_kg_hour"],
-                    y=sub["display_name"],
-                    orientation="h",
-                    marker=dict(color=color, line=dict(color=color, width=1)),
-                    text=[f"{v:.2f}" for v in sub["kcal_per_kg_hour"]],
-                    textposition="outside",
-                    customdata=sub[["n_windows"]].values,
-                    hovertemplate=(
-                        "<b>%{y}</b><br>"
-                        "kcal/kg/hour: %{x:.2f}<br>"
-                        "windows: %{customdata[0]:,}<extra></extra>"
-                    ),
-                ))
+    cal_rate = pd.read_sql("""
+        SELECT f.source, a.activity_name,
+               COUNT(*) AS n_windows,
+               ROUND(AVG(f.cal_per_kg) * 1800, 3) AS kcal_per_kg_hour
+        FROM fact_activity_window f
+        JOIN dim_activity a ON f.activity_id = a.activity_id
+        GROUP BY f.source, a.activity_name
+    """, conn_local)
 
-            fig.update_layout(
-                title="Calorie rate per activity",
-                barmode="group",
-                xaxis_title="kcal per kg per hour",
-                yaxis_title="",
-            )
-            st.plotly_chart(style_plot(fig, height=500), use_container_width=True)
+    act3_view = st.radio(
+        "View",
+        options=["Calorie rate per activity", "Fairness check on shared activities"],
+        horizontal=True,
+        key="act3_view",
+        label_visibility="collapsed",
+    )
 
-        with right:
-            shared_cal = (
-                cal_rate.pivot(
-                    index="activity_name",
-                    columns="cohort",
-                    values="kcal_per_kg_hour",
-                )
-                .dropna()
-                .copy()
-            )
+    if act3_view == "Calorie rate per activity":
+        pivot_cal = cal_rate.pivot(index="activity_name", columns="source",
+                                   values="kcal_per_kg_hour").fillna(0)
+        pivot_cal["max"] = pivot_cal.max(axis=1)
+        pivot_cal = pivot_cal.sort_values("max", ascending=True).drop(columns="max")
+        pivot_cal["display"] = [display_name(a) for a in pivot_cal.index]
 
-            shared_cal["delta_pct"] = (
-                (shared_cal["HAR70+"] - shared_cal["HARTH"])
-                / shared_cal["HARTH"]
-                * 100
-            )
+        fig = go.Figure()
+        if "HARTH" in pivot_cal.columns:
+            fig.add_trace(go.Bar(
+                name="HARTH", y=pivot_cal["display"], x=pivot_cal["HARTH"],
+                orientation="h",
+                marker=dict(color=COLOR_HARTH, line=dict(color=COLOR_HARTH, width=1)),
+                hovertemplate="<b>%{y}</b><br>HARTH: %{x:.2f} kcal/kg/hr<extra></extra>",
+            ))
+        if "HAR70+" in pivot_cal.columns:
+            fig.add_trace(go.Bar(
+                name="HAR70+", y=pivot_cal["display"], x=pivot_cal["HAR70+"],
+                orientation="h",
+                marker=dict(color=COLOR_HAR70, line=dict(color=COLOR_HAR70, width=1)),
+                hovertemplate="<b>%{y}</b><br>HAR70+: %{x:.2f} kcal/kg/hr<extra></extra>",
+            ))
+        fig.update_layout(
+            title="Calorie burn rate per activity, by cohort",
+            barmode="group",
+            xaxis_title="kcal per kg per hour",
+            yaxis_title="",
+        )
+        st.plotly_chart(style_plot(fig, height=max(400, 50 + 45 * len(pivot_cal))),
+                        use_container_width=True)
+
+        with st.expander("What this means"):
+            st.markdown("""
+The rankings diverge where they should. HARTH's top calorie-burners are running and cycling — activities with no HAR70+ counterpart at all. HAR70+'s top burners are walking and stairs up, because that's the vigorous end of what this cohort actually did.
+
+The app uses this directly in the recommender tab. If a 75-year-old user wants to burn 200 calories, the recommender doesn't offer running (no reference data) or cycling (same). It offers walking and stairs, ranked by how efficiently each hits the goal. That's the whole point of cohort-aware recommendations — fewer options, but every option grounded in real evidence for someone like the user.
+            """)
+
+    else:  # Fairness check
+        pivot_cal = cal_rate.pivot(index="activity_name", columns="source",
+                                   values="kcal_per_kg_hour")
+        shared_cal = pivot_cal.dropna().copy()
+        if not shared_cal.empty:
+            shared_cal["delta_pct"] = ((shared_cal["HAR70+"] - shared_cal["HARTH"]) /
+                                       shared_cal["HARTH"] * 100).round(2)
             shared_cal = shared_cal.sort_values("delta_pct")
-            shared_cal["display_name"] = shared_cal.index.map(display_name)
+            shared_cal["display"] = [display_name(a) for a in shared_cal.index]
+
+            colors = [ACCENT if d >= 0 else "#FF8A4C" for d in shared_cal["delta_pct"]]
 
             fig = go.Figure()
             fig.add_trace(go.Bar(
+                y=shared_cal["display"],
                 x=shared_cal["delta_pct"],
-                y=shared_cal["display_name"],
                 orientation="h",
-                marker=dict(
-                    color=[
-                        COLOR_HAR70 if d < 0 else ACCENT
-                        for d in shared_cal["delta_pct"]
-                    ],
-                    line=dict(color=BORDER_SOFT, width=1),
-                ),
+                marker=dict(color=colors, line=dict(color=colors, width=1)),
                 text=[f"{d:+.2f}%" for d in shared_cal["delta_pct"]],
                 textposition="outside",
-                hovertemplate="<b>%{y}</b><br>HAR70+ vs HARTH: %{x:+.2f}%<extra></extra>",
+                textfont=dict(color=TEXT_PRIMARY, size=11),
+                hovertemplate="<b>%{y}</b><br>Δ: %{x:+.2f}%<extra></extra>",
+                showlegend=False,
             ))
-            fig.add_vline(
-                x=0,
-                line_width=1,
-                line_dash="dot",
-                line_color=TEXT_MUTED,
-            )
+            fig.add_vline(x=0, line_width=1, line_color=TEXT_MUTED)
+            # Pad x-axis so the +/- annotations don't clip
+            x_max = max(abs(shared_cal["delta_pct"].min()), abs(shared_cal["delta_pct"].max()), 1)
+            fig.update_xaxes(range=[-x_max * 1.5, x_max * 1.5])
             fig.update_layout(
-                title="Fairness delta on shared activities",
-                xaxis_title="% difference in calorie rate",
+                title="Calorie rate: HAR70+ vs HARTH on shared activities",
+                xaxis_title="% difference (HAR70+ relative to HARTH)",
                 yaxis_title="",
             )
-            st.plotly_chart(style_plot(fig, height=500), use_container_width=True)
+            st.plotly_chart(style_plot(fig, height=max(350, 60 + 45 * len(shared_cal))),
+                            use_container_width=True)
 
-        with st.expander("Interpretation"):
-            st.markdown(f"""
-The calorie ranking shows that the app preserves meaningful differences between activity types. HARTH can include higher-burning activities such as running or cycling, while HAR70+ is naturally limited to the activities actually observed in that cohort.
+            with st.expander("What this means"):
+                max_gap = shared_cal["delta_pct"].abs().max()
+                st.markdown(f"""
+For activities both cohorts did, the calorie rates land within **{max_gap:.1f}%** of each other after calibration. That's the fairness check working.
 
-The fairness delta is the key check. For activities shared by both cohorts, the calibrated calorie rates stay close instead of creating large artificial gaps. That means the app can still recommend different activities where the data supports it, while avoiding unfair differences for the same shared activity.
-            """)
+Without calibration, HAR70+'s lower-intensity walking signal would have produced systematically lower calorie estimates for the same labeled activity — essentially telling older users they burn fewer calories walking than younger users, even when both are walking at their own typical pace. The calibration step corrects for this by scoring each window against its own cohort's distribution, so "typical walking intensity" is defined per group.
 
-    # -------------------------------------------------------------------------
-    # Final takeaways
-    # -------------------------------------------------------------------------
+**The result:** the app preserves meaningful differences (different cohorts get different activity menus based on what their data supports) without introducing unfair differences (the same activity, done at typical intensity, produces comparable estimates).
+                """)
+        else:
+            st.info("Not enough shared activities across cohorts to compute fairness delta.")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("#### What this means for BurnWise")
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.markdown(
-            headline_stat(
-                "1",
-                "Cohort context matters",
-                "HARTH and HAR70+ differ in more than age. Their activity coverage and recording volume differ too."
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with c2:
-        st.markdown(
-            headline_stat(
-                "2",
-                "Labels are not enough",
-                "Walking is one label, but the sensor signal shows that people can perform it differently."
-            ),
-            unsafe_allow_html=True,
-        )
-
-    with c3:
-        st.markdown(
-            headline_stat(
-                "3",
-                "Calibration protects trust",
-                "The app keeps real activity differences while making shared activities more comparable."
-            ),
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        f"""
-<div class="coach-note">
-<strong>Business interpretation:</strong> A wearable analytics product should not use one generic benchmark for every user.
-The pipeline shows why cohort-aware calibration matters: it makes the recommendations more realistic, more explainable,
-and more credible for users across age groups.
+    # =============================================================================
+    # Takeaways
+    # =============================================================================
+    st.markdown(f"""
+<div style='border-left:3px solid {ACCENT}; padding-left:1rem; margin:1rem 0 1rem 0;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.75rem;
+              letter-spacing:0.25em; text-transform:uppercase; margin-bottom:0.3rem;'>Takeaways</div>
+  <div style='color:{TEXT_PRIMARY}; font-family:"Oswald", sans-serif; font-size:1.5rem;
+              font-weight:500;'>Why this shape of pipeline, why this shape of app</div>
 </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        st.markdown(f"""
+<div style='background:{BG_PANEL}; border:1px solid {BORDER_SOFT};
+            border-top:3px solid {ACCENT}; padding:1.2rem; border-radius:3px; height:100%;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.7rem;
+              letter-spacing:0.2em; text-transform:uppercase; margin-bottom:0.6rem;'>Finding 1</div>
+  <div style='color:{TEXT_PRIMARY}; font-weight:600; font-size:1rem; margin-bottom:0.5rem;'>
+    Cohort context matters.
+  </div>
+  <div style='color:{TEXT_SECONDARY}; font-size:0.85rem; line-height:1.55;'>
+    HARTH and HAR70+ differ not just in age but in daily routine. Pooling them
+    would hide behaviors that actually shape the output. The app picks one cohort
+    based on your age rather than averaging across both.
+  </div>
+</div>
+        """, unsafe_allow_html=True)
+    with t2:
+        st.markdown(f"""
+<div style='background:{BG_PANEL}; border:1px solid {BORDER_SOFT};
+            border-top:3px solid {ACCENT}; padding:1.2rem; border-radius:3px; height:100%;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.7rem;
+              letter-spacing:0.2em; text-transform:uppercase; margin-bottom:0.6rem;'>Finding 2</div>
+  <div style='color:{TEXT_PRIMARY}; font-weight:600; font-size:1rem; margin-bottom:0.5rem;'>
+    Labels aren't enough.
+  </div>
+  <div style='color:{TEXT_SECONDARY}; font-size:0.85rem; line-height:1.55;'>
+    "Walking" at 30 and "walking" at 75 look measurably different in the sensor
+    data. A label alone can't capture that. The pipeline's intensity calibration
+    reads the underlying signal, not just the tag.
+  </div>
+</div>
+        """, unsafe_allow_html=True)
+    with t3:
+        st.markdown(f"""
+<div style='background:{BG_PANEL}; border:1px solid {BORDER_SOFT};
+            border-top:3px solid {ACCENT}; padding:1.2rem; border-radius:3px; height:100%;'>
+  <div style='color:{ACCENT}; font-family:"Oswald", sans-serif; font-size:0.7rem;
+              letter-spacing:0.2em; text-transform:uppercase; margin-bottom:0.6rem;'>Finding 3</div>
+  <div style='color:{TEXT_PRIMARY}; font-weight:600; font-size:1rem; margin-bottom:0.5rem;'>
+    Calibration keeps it fair.
+  </div>
+  <div style='color:{TEXT_SECONDARY}; font-size:0.85rem; line-height:1.55;'>
+    Each window is scored against its own cohort-activity reference. That turns
+    raw sensor differences into comparable calorie rates — without hardcoding
+    age adjustments anywhere in the formula.
+  </div>
+</div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    # =============================================================================
+    # Data sources — keep existing expanders
+    # =============================================================================
+    st.markdown("#### Under the hood: data sources")
+
+    with st.expander("HARTH dataset"):
+        st.markdown(f"""
+**Origin:** Human Activity Recognition Trondheim, collected by NTNU. Sensor data from back- and thigh-mounted accelerometers, labeled with ground-truth activity from video.
+
+**Our slice:** {prov['n_harth']} subjects, {prov['windows_harth']:,} 2-second windows across {harth_activities} activities.
+
+**Known limits:** working-age convenience sample, sedentary activities dominate, video-derived labels have high but imperfect purity.
+        """)
+
+    with st.expander("HAR70+ dataset"):
+        st.markdown(f"""
+**Origin:** Same NTNU group, extended to older adults. Narrower activity set by design (no vigorous activities for safety).
+
+**Our slice:** {prov['n_har70']} subjects, {prov['windows_har70']:,} windows across {har70_activities} activities.
+
+**Known limits:** smaller sample, no vigorous data. The {size_ratio:.1f}× size gap with HARTH is the most important caveat on cross-cohort comparisons.
+        """)
+
+    with st.expander("Open-Meteo weather"):
+        st.markdown("""
+**Origin:** Open-Meteo's historical archive + live forecast API. Free, no API key, attribution requested. Trondheim coordinates (63.4305, 10.3951).
+
+**Our usage:** hourly temperature, precipitation, and WMO weather codes, aggregated to daily summaries for the recommender filter.
+
+**Known limits:** the bad-weather threshold (codes 51-67, 71-77, 80-82, 95-99) is a judgment call, not a clinical definition. Outdoor options stay visible-but-flagged rather than disappearing, so you can override the default.
+        """)
+
+    with st.expander("2024 Compendium of Physical Activities"):
+        st.markdown("""
+**Origin:** published MET reference values, used as the baseline activity intensity before cohort calibration.
+
+**Our usage:** MET values for each activity name, looked up at app runtime from `dim_activity.base_met`.
+
+**Known limits:** compendium values are population averages — the pipeline's intensity calibration step adjusts these per cohort per window, which is why our calorie estimates differ slightly from raw compendium math for the same activity.
+        """)
