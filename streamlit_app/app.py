@@ -1,33 +1,5 @@
 """
 BurnWise - Streamlit app for the HARTH + HAR70+ pipeline.
-
-Three tabs:
-  - Estimate calories (Mode A): calculator for a chosen activity + effort
-  - Help me pick something (Mode B): recommender with live weather
-  - About this data (Mode C): insights dashboard, satisfies project spec 4.6
-
-Data sources wired in:
-  - pipeline.db  (sensor data + historical weather, local SQLite)
-  - Open-Meteo API  (live weather for dates not in the DB)
-
-Schema targeted (confirmed against schema.sql):
-  dim_subject(subject_id, cohort, age_group)
-  dim_activity(activity_id, activity_name, met_value, intensity_class, compendium_code)
-  dim_weather_hour(hour_key, temperature_c, humidity_pct, precipitation_mm,
-                   wind_speed_kmh, weather_code, cloud_cover_pct)
-  dim_date(date, year, month, day, day_of_week, is_weekend, date_is_real)
-  fact_window(..., met_minutes)
-
-Design decisions documented in /docs/decisions.md. Key ones here:
-  1. Mode A picker hides MET<2 (postures) because nobody picks "sitting" as a
-     workout. Mode B keeps them: honest floor-case for low goals + long time.
-  2. Per-window intensity percentiles were originally planned (see app.py v1)
-     but dropped: met_minutes was computed from compendium MET, so per-window
-     MET is effectively constant and a percentile picker would be meaningless.
-     Replaced with an effort multiplier on dim_activity.met_value.
-  3. Weather is hybrid: DB first (historical dates in the pipeline range),
-     Open-Meteo fallback for dates outside the DB. Timeouts short, caches
-     aggressively.
 """
 
 from __future__ import annotations
@@ -36,7 +8,7 @@ import json
 import sqlite3
 import urllib.request
 import urllib.error
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -58,7 +30,6 @@ if not DB_PATH.exists():
     urllib.request.urlretrieve(DB_URL, DB_PATH)
     st.success("Database downloaded.")
 
-# NTNU Trondheim coordinates - matches where HARTH/HAR70+ data was collected.
 TRONDHEIM_LAT = 63.4305
 TRONDHEIM_LON = 10.3951
 
@@ -93,22 +64,18 @@ ACTIVITY_DISPLAY_NAMES = {
     "lying":                  "Lying down",
 }
 
-# Palette — professional sports-data aesthetic.
-# Deep graphite base (not pure black, not green-black), sharp volt-green accent
-# used sparingly, cool slate for contrast. Drops the "radioactive glow" feel while
-# keeping the dark, data-product personality.
-ACCENT        = "#9AE62F"   # volt green — saturated but not glowing
-ACCENT_SOFT   = "#B8F060"   # hover states, soft emphasis
-ACCENT_CYAN   = "#4FC3F7"   # secondary accent for two-cohort contrast
-BG_DEEP       = "#0E1215"   # graphite, cool undertone
-BG_PANEL      = "#161B20"   # panels, cards
-BG_ELEVATED   = "#1E252B"   # hover, elevated surfaces
+ACCENT        = "#9AE62F"
+ACCENT_SOFT   = "#B8F060"
+ACCENT_CYAN   = "#4FC3F7"
+BG_DEEP       = "#0E1215"
+BG_PANEL      = "#161B20"
+BG_ELEVATED   = "#1E252B"
 BORDER_SOFT   = "rgba(255, 255, 255, 0.06)"
 BORDER_MED    = "rgba(154, 230, 47, 0.18)"
 BORDER_STRONG = "rgba(154, 230, 47, 0.35)"
-TEXT_PRIMARY   = "#E8EEF1"   # off-white, neutral
-TEXT_SECONDARY = "#A7B3BC"   # slate
-TEXT_MUTED     = "#6A7681"   # muted slate
+TEXT_PRIMARY   = "#E8EEF1"
+TEXT_SECONDARY = "#A7B3BC"
+TEXT_MUTED     = "#6A7681"
 COLOR_HARTH   = ACCENT
 COLOR_HAR70   = ACCENT_CYAN
 COLOR_DIM     = "#2A3138"
@@ -118,6 +85,16 @@ KCAL_PER_MET_KG_HOUR = 1.0
 
 def display_name(activity: str) -> str:
     return ACTIVITY_DISPLAY_NAMES.get(activity, activity.replace("_", " ").title())
+
+
+def met_to_intensity(met: float) -> str:
+    if met < 1.5:
+        return "sedentary"
+    if met < 3.0:
+        return "light"
+    if met < 6.0:
+        return "moderate"
+    return "vigorous"
 
 
 # =============================================================================
@@ -135,14 +112,12 @@ st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-    /* ---------- hide Streamlit chrome ---------- */
     header[data-testid="stHeader"] {{
         background: transparent !important;
         height: 0 !important;
     }}
     #MainMenu, footer, [data-testid="stToolbar"] {{ visibility: hidden; }}
 
-    /* ---------- base canvas ---------- */
     .stApp {{
         background:
             radial-gradient(ellipse 1200px 800px at 15% -10%, rgba(154,230,47,0.025) 0%, transparent 60%),
@@ -152,7 +127,6 @@ st.markdown(f"""
         font-family: 'JetBrains Mono', monospace;
     }}
 
-    /* subtle scanlines, very faint */
     .stApp::before {{
         content: '';
         position: fixed; inset: 0;
@@ -163,7 +137,6 @@ st.markdown(f"""
         pointer-events: none; z-index: 1;
     }}
 
-    /* ---------- entrance animation ---------- */
     @keyframes fadeUp {{
         from {{ opacity: 0; transform: translateY(8px); }}
         to   {{ opacity: 1; transform: translateY(0); }}
@@ -172,7 +145,6 @@ st.markdown(f"""
         animation: fadeUp 0.5s ease-out;
     }}
 
-    /* ---------- typography ---------- */
     h1, h2, h3, h4 {{
         font-family: 'Oswald', sans-serif !important;
         color: {TEXT_PRIMARY} !important;
@@ -184,15 +156,13 @@ st.markdown(f"""
         font-size: 2.8rem !important;
         font-weight: 600 !important;
         margin-bottom: 0.1rem !important;
-        letter-spacing: 0.01em;
         text-transform: uppercase;
     }}
-    h2 {{ font-size: 1.5rem !important; font-weight: 500 !important; letter-spacing: 0.02em; }}
+    h2 {{ font-size: 1.5rem !important; font-weight: 500 !important; }}
     h3 {{
         font-size: 1.15rem !important;
         font-weight: 500 !important;
         color: {TEXT_PRIMARY} !important;
-        letter-spacing: 0.02em;
     }}
 
     p, .stMarkdown p {{
@@ -202,10 +172,11 @@ st.markdown(f"""
         color: {TEXT_SECONDARY};
     }}
 
-    /* ---------- sidebar ---------- */
     [data-testid="stSidebar"] {{
         background: linear-gradient(180deg, {BG_PANEL} 0%, #0D1411 100%);
         border-right: 1px solid {BORDER_SOFT};
+        min-width: 300px !important;
+        max-width: 300px !important;
     }}
     [data-testid="stSidebar"] > div {{ padding-top: 2.5rem; }}
     [data-testid="stSidebar"] h2 {{
@@ -216,44 +187,17 @@ st.markdown(f"""
         margin-top: 0;
     }}
 
-    /* sidebar collapse/expand button — the selector Streamlit actually uses */
+    [data-testid="stSidebarCollapseButton"],
     [data-testid="baseButton-header"],
     button[data-testid="baseButton-headerNoPadding"],
     [data-testid="collapsedControl"] {{
-        background: {BG_PANEL} !important;
-        border: 1.5px solid {ACCENT} !important;
-        border-radius: 4px !important;
-        opacity: 1 !important;
-        box-shadow: 0 0 0 1px rgba(154,230,47,0.1) !important;
-        padding: 6px !important;
-    }}
-    [data-testid="baseButton-header"]:hover,
-    button[data-testid="baseButton-headerNoPadding"]:hover,
-    [data-testid="collapsedControl"]:hover {{
-        background: {BG_ELEVATED} !important;
-        box-shadow: 0 0 0 2px rgba(154,230,47,0.25) !important;
-    }}
-    /* the SVG icon inside the toggle — force visible accent color */
-    [data-testid="baseButton-header"] svg,
-    [data-testid="baseButton-headerNoPadding"] svg,
-    [data-testid="collapsedControl"] svg {{
-        color: {ACCENT} !important;
-        fill: {ACCENT} !important;
-    }}
-    /* when the sidebar is collapsed, the floating arrow pins to top-left */
-    [data-testid="collapsedControl"] {{
-        top: 0.6rem !important;
-        left: 0.6rem !important;
-        position: fixed !important;
-        z-index: 999 !important;
+        display: none !important;
     }}
 
-    /* ---------- tabs ---------- */
     .stTabs [data-baseweb="tab-list"] {{
         gap: 0.25rem;
         background: transparent;
         border-bottom: 1px solid {BORDER_SOFT};
-        padding-bottom: 0;
     }}
     .stTabs [data-baseweb="tab"] {{
         background: transparent;
@@ -264,7 +208,6 @@ st.markdown(f"""
         font-size: 0.85rem;
         padding: 0.85rem 1.3rem;
         border-radius: 2px 2px 0 0;
-        transition: all 0.2s ease;
     }}
     .stTabs [data-baseweb="tab"]:hover {{
         color: {ACCENT_SOFT};
@@ -277,7 +220,6 @@ st.markdown(f"""
         background: rgba(154,230,47,0.04);
     }}
 
-    /* ---------- metrics ---------- */
     [data-testid="stMetricValue"] {{
         font-family: 'Oswald', sans-serif !important;
         color: {ACCENT} !important;
@@ -296,13 +238,8 @@ st.markdown(f"""
         border: 1px solid {BORDER_SOFT};
         border-radius: 4px;
         padding: 1rem 1.2rem;
-        transition: border-color 0.2s;
-    }}
-    [data-testid="stMetric"]:hover {{
-        border-color: {BORDER_STRONG};
     }}
 
-    /* ---------- inputs ---------- */
     .stNumberInput input, .stTextInput input, .stDateInput input {{
         background: {BG_PANEL} !important;
         color: {TEXT_PRIMARY} !important;
@@ -320,27 +257,23 @@ st.markdown(f"""
         border-radius: 3px !important;
     }}
 
-    /* slider */
     [data-baseweb="slider"] [role="slider"] {{
         background: {ACCENT} !important;
         box-shadow: 0 0 6px rgba(154,230,47,0.3) !important;
     }}
 
-    /* radio as pills */
     .stRadio [role="radiogroup"] label {{
         background: {BG_PANEL};
         border: 1px solid {BORDER_SOFT};
         padding: 0.4rem 1rem;
         margin-right: 0.5rem;
         border-radius: 3px;
-        transition: all 0.2s;
     }}
     .stRadio [role="radiogroup"] label:hover {{
         border-color: {BORDER_STRONG};
         background: rgba(154,230,47,0.04);
     }}
 
-    /* alerts */
     .stAlert {{
         background: {BG_PANEL} !important;
         border-left: 3px solid {ACCENT} !important;
@@ -348,19 +281,11 @@ st.markdown(f"""
         font-family: 'JetBrains Mono', monospace !important;
     }}
 
-    /* dataframe */
-    [data-testid="stDataFrame"] {{
-        border: 1px solid {BORDER_SOFT};
-        border-radius: 3px;
-    }}
-
-    /* captions */
     .stCaption, [data-testid="stCaptionContainer"] {{
         color: {TEXT_MUTED} !important;
         font-size: 0.75rem !important;
     }}
 
-    /* expander */
     [data-testid="stExpander"] {{
         background: {BG_PANEL} !important;
         border: 1px solid {BORDER_SOFT} !important;
@@ -372,7 +297,6 @@ st.markdown(f"""
         font-size: 0.9rem !important;
     }}
 
-    /* ---------- custom components ---------- */
     .provenance-strip {{
         background: linear-gradient(90deg, rgba(154,230,47,0.025) 0%, transparent 100%);
         border: 1px solid {BORDER_SOFT};
@@ -405,18 +329,15 @@ st.markdown(f"""
         padding: 1.3rem 1.1rem;
         border-radius: 3px;
         height: 100%;
-        transition: all 0.25s ease;
     }}
     .headline-stat:hover {{
         border-color: {BORDER_STRONG};
-        transform: translateY(-2px);
     }}
     .headline-stat .stat-value {{
         font-family: 'Oswald', sans-serif;
         font-size: 2rem;
         font-weight: 700;
         color: {ACCENT};
-        text-shadow: 0 0 6px rgba(154,230,47,0.15);
         line-height: 1;
         margin-bottom: 0.5rem;
     }}
@@ -433,7 +354,6 @@ st.markdown(f"""
         line-height: 1.5;
     }}
 
-    /* live-data indicator */
     .live-dot {{
         display: inline-block;
         width: 7px; height: 7px;
@@ -449,7 +369,6 @@ st.markdown(f"""
         50%      {{ opacity: 0.5; transform: scale(0.85); }}
     }}
 
-    /* footer */
     .app-footer {{
         border-top: 1px solid {BORDER_SOFT};
         padding-top: 1.2rem;
@@ -459,15 +378,12 @@ st.markdown(f"""
         line-height: 1.6;
     }}
 
-    /* hero tagline */
     .hero-sub {{
         color: {TEXT_SECONDARY};
         font-size: 0.95rem;
-        letter-spacing: 0.02em;
         margin-bottom: 1rem;
     }}
 
-    /* cohort card in sidebar */
     .cohort-card {{
         background: linear-gradient(135deg, {BG_ELEVATED} 0%, {BG_PANEL} 100%);
         border: 1px solid {BORDER_SOFT};
@@ -480,15 +396,6 @@ st.markdown(f"""
         color: {TEXT_SECONDARY};
     }}
     .cohort-card strong {{ color: {ACCENT}; }}
-    
-    [data-testid="stSidebar"] {
-    min-width: 300px !important;
-    max-width: 300px !important;
-}
-
-[data-testid="stSidebarCollapseButton"] {
-    display: none !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -523,7 +430,7 @@ def style_plot(fig: go.Figure, height: int = 380) -> go.Figure:
 
 
 # =============================================================================
-# Database helpers
+# Database helpers (NEW SCHEMA)
 # =============================================================================
 
 @st.cache_resource
@@ -536,7 +443,7 @@ def get_connection() -> sqlite3.Connection:
 @st.cache_data
 def load_cohort_activities() -> pd.DataFrame:
     conn = get_connection()
-    return pd.read_sql(
+    df = pd.read_sql(
         """
         SELECT f.source            AS cohort,
                a.activity_name     AS activity_name,
@@ -549,6 +456,8 @@ def load_cohort_activities() -> pd.DataFrame:
         """,
         conn,
     )
+    df["intensity_class"] = df["met_value"].apply(met_to_intensity)
+    return df
 
 
 @st.cache_data
@@ -564,19 +473,19 @@ def load_provenance() -> dict:
     stats["n_harth"]  = cohort_counts.get("HARTH", 0)
     stats["n_har70"]  = cohort_counts.get("HAR70+", 0)
     window_counts = dict(conn.execute("""
-        SELECT f.source, COUNT(*) FROM fact_activity_window f
-        GROUP BY f.source
+        SELECT source, COUNT(*) FROM fact_activity_window GROUP BY source
     """).fetchall())
     stats["windows_harth"] = window_counts.get("HARTH", 0)
     stats["windows_har70"] = window_counts.get("HAR70+", 0)
     return stats
+
 
 @st.cache_data
 def load_intensity_mix() -> pd.DataFrame:
     conn = get_connection()
     return pd.read_sql("""
         SELECT f.source AS cohort,
-               CASE 
+               CASE
                    WHEN a.base_met < 1.5 THEN 'sedentary'
                    WHEN a.base_met < 3.0 THEN 'light'
                    WHEN a.base_met < 6.0 THEN 'moderate'
@@ -587,6 +496,7 @@ def load_intensity_mix() -> pd.DataFrame:
         JOIN dim_activity a ON f.activity_id = a.activity_id
         GROUP BY f.source, intensity_class
     """, conn)
+
 
 @st.cache_data
 def load_db_weather_dates() -> list[date]:
@@ -623,17 +533,8 @@ def lookup_weather_db(target_date: date) -> dict | None:
     }
 
 
-@st.cache_data(ttl=3600)  # cache live results for an hour
+@st.cache_data(ttl=3600)
 def lookup_weather_live(target_date: date) -> dict | None:
-    """
-    Query Open-Meteo for a given date in Trondheim.
-
-    Uses the forecast endpoint for today/future and the archive endpoint for
-    past dates. Free, no API key required. 3-second timeout with graceful
-    fallback to None so the app stays responsive if the API is slow.
-
-    Returns a dict in the same shape as lookup_weather_db.
-    """
     today = date.today()
     if target_date >= today:
         base_url = "https://api.open-meteo.com/v1/forecast"
@@ -687,12 +588,6 @@ def lookup_weather_live(target_date: date) -> dict | None:
 
 
 def lookup_weather(target_date: date) -> dict | None:
-    """
-    Hybrid: DB first for dates in the historical archive, Open-Meteo for others.
-
-    This keeps the fast path fast (most dates users care about are "today") and
-    preserves the frozen historical data for the dates the pipeline captured.
-    """
     db_result = lookup_weather_db(target_date)
     if db_result is not None:
         return db_result
@@ -728,7 +623,7 @@ def headline_stat(value: str, label: str, insight: str) -> str:
 
 
 # =============================================================================
-# Header + provenance
+# Header
 # =============================================================================
 
 st.markdown(f"# {APP_TITLE}")
@@ -738,7 +633,7 @@ st.markdown(
 )
 
 if not DB_PATH.exists():
-    st.error(f"Can't find the database at {DB_PATH}. Run the pipeline notebooks first.")
+    st.error(f"Can't find the database at {DB_PATH}.")
     st.stop()
 
 prov = load_provenance()
@@ -757,12 +652,10 @@ st.markdown(
 
 
 # =============================================================================
-# Sidebar profile
+# Sidebar
 # =============================================================================
 
 with st.sidebar:
-    # Small pulse-line mark — reads as "activity/signal" without being gym clipart.
-    # Pure inline SVG so it scales crisp and recolors with the theme.
     st.markdown(f"""
 <div style="display: flex; align-items: center; gap: 0.7rem; margin-bottom: 1.5rem;">
   <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -772,7 +665,7 @@ with st.sidebar:
   </svg>
   <span style="font-family: 'Oswald', sans-serif; font-size: 1rem;
                font-weight: 500; letter-spacing: 0.15em; color: {TEXT_PRIMARY};
-               text-transform: uppercase;">Calorie Coach</span>
+               text-transform: uppercase;">BurnWise</span>
 </div>
     """, unsafe_allow_html=True)
 
@@ -799,12 +692,11 @@ with st.sidebar:
         cohort_msg = (
             f"Reference group: <strong>adults 70 and over</strong> "
             f"({prov['n_har70']} volunteers, all independently active). "
-            "Same science, better-matched numbers."
+            "Reference data adjusted for age."
         )
     st.markdown(f'<div class="cohort-card">{cohort_msg}</div>', unsafe_allow_html=True)
 
 
-# Shared data
 all_activities = load_cohort_activities()
 cohort_df = all_activities[all_activities["cohort"] == cohort].copy()
 cohort_df["display_name"] = cohort_df["activity_name"].map(display_name)
@@ -822,14 +714,14 @@ tab_estimate, tab_recommend, tab_about = st.tabs([
 
 
 # -----------------------------------------------------------------------------
-# MODE A - Estimate
+# MODE A
 # -----------------------------------------------------------------------------
 
 with tab_estimate:
     st.markdown("### How many calories will this burn?")
     st.markdown(
         f"<p style='color:{TEXT_SECONDARY}; margin-bottom:1.2rem;'>"
-        "Pick an activity, say how hard you're going and for how long. We'll handle the rest."
+        "Pick an activity, say how hard you're going and for how long."
         "</p>",
         unsafe_allow_html=True,
     )
@@ -878,22 +770,13 @@ with tab_estimate:
         mcol3.metric("Intensity", intensity_class.title())
 
         if total_kcal < 50:
-            coach_line = (
-                "Quick sessions like this are about consistency more than calorie burn. "
-                "Still counts, still worth doing."
-            )
+            coach_line = "Quick sessions are about consistency more than calorie burn. Still counts."
         elif total_kcal < 150:
-            coach_line = (
-                "Solid range for a single session. Easy to fit into most days without wiping you out."
-            )
+            coach_line = "Solid range for a single session. Easy to fit into most days."
         elif total_kcal < 300:
-            coach_line = (
-                "Real burn. Three or four of these a week adds up quickly."
-            )
+            coach_line = "Real burn. Three or four of these a week adds up quickly."
         else:
-            coach_line = (
-                f"{total_kcal:.0f} calories is a proper session. Don't forget to eat after."
-            )
+            coach_line = f"{total_kcal:.0f} calories is a proper session. Don't forget to eat after."
         coach_note(coach_line)
 
         st.markdown("### How this stacks up against similar activities")
@@ -954,12 +837,19 @@ with tab_estimate:
                     else "moderate" if n_windows > 100
                     else "limited"
                 )
+                if not alternatives.empty:
+                    met_min = alternatives["met_value"].min()
+                    met_max = alternatives["met_value"].max()
+                    range_text = f"MET between {met_min:.1f} and {met_max:.1f}"
+                else:
+                    range_text = "the same intensity band"
+
                 st.markdown(f"""
-We're comparing {chosen_display.lower()} against other {intensity_class}-class activities at the same duration, weight, and effort multiplier. All of these sit in the same intensity band (MET between {alternatives['met_value'].min():.1f} and {alternatives['met_value'].max():.1f}), so the spread you see comes entirely from compendium MET differences, not from how hard you're working.
+We're comparing {chosen_display.lower()} against other {intensity_class}-class activities at the same duration, weight, and effort multiplier. All of these sit in {range_text}, so the spread comes from compendium MET differences rather than from how hard you're working.
 
-{top['activity']} produces about **{ratio:.1f}x** the caloric output of {bot['activity'].lower()} at these settings. That multiplier is weight-invariant, the MET formula scales linearly with mass, so this ranking holds for any user.
+{top['activity']} produces about **{ratio:.1f}x** the caloric output of {bot['activity'].lower()} at these settings. That multiplier is weight-invariant: the MET formula scales linearly with mass, so the ranking holds for any user.
 
-One caveat worth naming: confidence in each estimate scales with how many sensor windows back it up. {display_name(chosen_activity)} has **{n_windows:,}** windows in your cohort, which is {confidence}. Below a few hundred windows, treat numbers as directional rather than precise.
+Confidence in each estimate scales with how many sensor windows back it up. {display_name(chosen_activity)} has **{n_windows:,}** windows in your cohort, which is {confidence}. Below a few hundred windows, treat numbers as directional.
                 """)
         else:
             st.caption("Not enough other activities in this intensity band to compare against.")
@@ -976,19 +866,19 @@ One caveat worth naming: confidence in each estimate scales with how many sensor
 
 **Result:** {adjusted_met:.2f} × {weight_kg:.1f} × {duration_min/60:.2f} = **{total_kcal:.1f} kcal**
 
-Based on **{n_windows:,}** observed windows of this activity in the {cohort_label} reference group.
+Based on **{n_windows:,}** observed windows in the {cohort_label} reference group.
             """)
 
 
 # -----------------------------------------------------------------------------
-# MODE B - Recommend
+# MODE B
 # -----------------------------------------------------------------------------
 
 with tab_recommend:
     st.markdown("### I want to burn some calories. What should I do?")
     st.markdown(
         f"<p style='color:{TEXT_SECONDARY}; margin-bottom:1.2rem;'>"
-        "Set a goal and a time window, we'll show what fits. We'll check the weather in Trondheim too."
+        "Set a goal and a time window. We'll show what fits and check the weather."
         "</p>",
         unsafe_allow_html=True,
     )
@@ -1014,18 +904,16 @@ with tab_recommend:
 
     if weather is None:
         st.info(
-            f"Couldn't fetch weather for {target_date.isoformat()} "
-            "(API timeout or date outside our range). Showing all activities."
+            f"Couldn't fetch weather for {target_date.isoformat()}. "
+            "Showing all activities."
         )
     else:
-        # Header line with live/archive indicator
         src_label = "live" if weather["source"] == "live" else "archive"
         src_html = (
             f"<span class='live-dot'></span><strong>live</strong> weather"
             if src_label == "live"
             else f"<strong>archive</strong> weather"
         )
-        # Cross-platform date format: manual, avoiding %-d (Unix) / %#d (Windows).
         date_label = (
             f"{target_date.strftime('%A')}, "
             f"{target_date.strftime('%b')} {target_date.day}, {target_date.year}"
@@ -1046,7 +934,7 @@ with tab_recommend:
         if weather["is_bad_weather"]:
             filter_outdoor = True
             st.warning(
-                "Rough weather ahead. We'll still show outdoor options, just flagged "
+                "Rough weather ahead. Outdoor options stay visible but flagged "
                 "so you can see why indoor might be smarter today."
             )
 
@@ -1143,19 +1031,25 @@ with tab_recommend:
             slowest_rec = recommended.iloc[-1]
             speed_gap = slowest_rec["duration_needed_min"] / fastest_activity["duration_needed_min"]
 
+            weather_line = ""
+            if n_weather_cut > 0:
+                weather_line = (
+                    f" **{n_weather_cut}** additional outdoor options are flagged "
+                    "because Trondheim's weather crosses our bad-weather threshold "
+                    "(WMO codes for rain, snow, or thunderstorm)."
+                )
+
             st.markdown(f"""
-Of the **{n_total}** activities in the {cohort_label} reference set, **{n_fit}** can hit your {goal_kcal} kcal goal inside your {max_duration}-minute window.
-**{n_over_time}** are filtered purely on time.
-{f"**{n_weather_cut}** additional outdoor options are flagged because Trondheim's weather crosses our bad-weather threshold (WMO codes for rain, snow, or thunderstorm)." if n_weather_cut > 0 else ""}
+Of the **{n_total}** activities in the {cohort_label} reference set, **{n_fit}** can hit your {goal_kcal} kcal goal inside your {max_duration}-minute window. **{n_over_time}** are filtered purely on time.{weather_line}
 
-Within the feasible set, the efficiency spread is about **{speed_gap:.1f}x** (slowest vs fastest), driven entirely by MET differences. {display_name(fastest_activity['activity_name'])} at MET {fastest_activity['met_value']:.1f} is {speed_gap:.1f}x more time-efficient than {display_name(slowest_rec['activity_name']).lower()} at MET {slowest_rec['met_value']:.1f}, which is exactly what the formula predicts (time scales as the inverse of MET).
+Within the feasible set, the efficiency spread is about **{speed_gap:.1f}x** (slowest vs fastest), driven entirely by MET differences. {display_name(fastest_activity['activity_name'])} at MET {fastest_activity['met_value']:.1f} is {speed_gap:.1f}x more time-efficient than {display_name(slowest_rec['activity_name']).lower()} at MET {slowest_rec['met_value']:.1f}.
 
-**Takeaway:** if time is the constraint, intensity is the lever. If intensity is the constraint (injury, age, preference), you budget more time. This chart makes that trade-off visible instead of hiding it behind a single "best pick."
+If time is the constraint, intensity is the lever. If intensity is the constraint, you budget more time. This chart makes the trade-off visible instead of hiding it behind a single best pick.
             """)
 
 
 # -----------------------------------------------------------------------------
-# MODE C - About this data (dashboard / insights)
+# MODE C
 # -----------------------------------------------------------------------------
 
 with tab_about:
@@ -1168,7 +1062,6 @@ with tab_about:
         unsafe_allow_html=True,
     )
 
-    # ---- Headline findings ----
     st.markdown("#### Key findings")
 
     mix = load_intensity_mix()
@@ -1181,10 +1074,11 @@ with tab_about:
     har70_vigorous = int(har70_mix[har70_mix["intensity_class"] == "vigorous"]["n_windows"].sum())
     harth_vigorous = int(harth_mix[harth_mix["intensity_class"] == "vigorous"]["n_windows"].sum())
 
-    # Top 2 concentration
     def top2_share(cohort: str) -> tuple[int, list[str]]:
         sub = all_activities[all_activities["cohort"] == cohort].sort_values("n_windows", ascending=False)
         total = sub["n_windows"].sum()
+        if total == 0:
+            return 0, []
         top2 = sub.head(2)
         return int(top2["n_windows"].sum() / total * 100), top2["activity_name"].tolist()
     harth_share, harth_top = top2_share("HARTH")
@@ -1196,33 +1090,37 @@ with tab_about:
             f"{size_ratio:.1f}×",
             "Cohort size gap",
             f"HARTH has {size_ratio:.1f}× more sensor windows than HAR70+. "
-            f"Any comparison across cohorts carries this imbalance as a caveat."
+            f"Cross-cohort comparisons carry this imbalance as a caveat."
         ), unsafe_allow_html=True)
     with h2:
         st.markdown(headline_stat(
             f"{har70_activities} vs {harth_activities}",
             "Activity coverage",
             f"HAR70+ has {har70_activities} activities observed. HARTH has {harth_activities}. "
-            "The gap is real: older adults in this study don't run or cycle."
+            "Older adults in this study don't run or cycle."
         ), unsafe_allow_html=True)
     with h3:
         st.markdown(headline_stat(
             f"{har70_vigorous:,}",
             "Vigorous-class HAR70+ windows",
-            f"Zero. Every vigorous data point we have comes from HARTH ({harth_vigorous:,} windows). "
-            "A structural bias in the dataset, not a pipeline bug."
+            f"Zero. Every vigorous data point comes from HARTH ({harth_vigorous:,} windows). "
+            "A structural feature of the dataset, not a pipeline bug."
         ), unsafe_allow_html=True)
     with h4:
+        if harth_top and har70_top:
+            insight = (f"In both cohorts, two activities ({display_name(harth_top[0]).lower()} "
+                       f"and {display_name(harth_top[1]).lower()}) account for most windows. "
+                       "Everything else is tail.")
+        else:
+            insight = "Distribution heavily concentrated in top two activities per cohort."
         st.markdown(headline_stat(
             f"{harth_share}% / {har70_share}%",
             "Top-2 concentration",
-            f"In both cohorts, just two activities ({display_name(harth_top[0]).lower()} and "
-            f"{display_name(harth_top[1]).lower()}) account for most windows. Everything else is tail."
+            insight,
         ), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ---- Interactive cohort comparison ----
     st.markdown("#### Explore: cohort comparison")
     st.markdown(
         f"<p style='color:{TEXT_SECONDARY}; font-size:0.88rem;'>"
@@ -1240,24 +1138,26 @@ with tab_about:
     )
 
     if view == "Sample size by activity":
-        # Grouped bar: activity × cohort
         pivot = all_activities.pivot_table(
             index="activity_name", columns="cohort",
             values="n_windows", fill_value=0,
         ).reset_index()
-        pivot["total"] = pivot.get("HARTH", 0) + pivot.get("HAR70+", 0)
+        for col in ["HARTH", "HAR70+"]:
+            if col not in pivot.columns:
+                pivot[col] = 0
+        pivot["total"] = pivot["HARTH"] + pivot["HAR70+"]
         pivot = pivot.sort_values("total", ascending=True)
         pivot["display"] = pivot["activity_name"].map(display_name)
 
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            name="HARTH (under 70)", y=pivot["display"], x=pivot.get("HARTH", 0),
+            name="HARTH (under 70)", y=pivot["display"], x=pivot["HARTH"],
             orientation="h",
             marker=dict(color=COLOR_HARTH, line=dict(color=COLOR_HARTH, width=1)),
             hovertemplate="<b>%{y}</b><br>HARTH: %{x:,} windows<extra></extra>",
         ))
         fig.add_trace(go.Bar(
-            name="HAR70+ (70 and over)", y=pivot["display"], x=pivot.get("HAR70+", 0),
+            name="HAR70+ (70 and over)", y=pivot["display"], x=pivot["HAR70+"],
             orientation="h",
             marker=dict(color=COLOR_HAR70, line=dict(color=COLOR_HAR70, width=1)),
             hovertemplate="<b>%{y}</b><br>HAR70+: %{x:,} windows<extra></extra>",
@@ -1270,19 +1170,12 @@ with tab_about:
 
         with st.expander("Analytical read"):
             st.markdown("""
-Two things jump out. First, sitting and walking dominate both cohorts, reflecting how people
-actually spend their time, not how a gym programmer would want them to. Most ambient-activity
-datasets look like this, and it's a meaningful constraint: we have strong confidence in walking
-estimates and much weaker confidence for things like stairs (under 800 windows in HARTH, under 50 in HAR70+).
+Sitting and walking dominate both cohorts, reflecting how people spend their time in real life rather than how a gym programmer would want them to. Confidence is high for walking estimates and much lower for stairs (under 800 windows in HARTH, under 50 in HAR70+).
 
-Second, the right-tail (vigorous activities) exists only in HARTH. There's no ethical or clean
-way to fill that in for HAR70+ without either collecting new data or borrowing estimates from
-the compendium, which would undermine our cohort-specific framing. We document this rather than
-pretend the data is balanced.
+Vigorous activities exist only in HARTH. There is no clean way to fill that in for HAR70+ without collecting new data or borrowing estimates from the compendium, which would undermine cohort-specific framing. We document the gap rather than pretend the data is balanced.
             """)
 
     elif view == "Intensity mix":
-        # Stacked percentage bars
         mix_pct = mix.copy()
         totals = mix_pct.groupby("cohort")["n_windows"].transform("sum")
         mix_pct["pct"] = mix_pct["n_windows"] / totals * 100
@@ -1318,18 +1211,15 @@ pretend the data is balanced.
         st.plotly_chart(style_plot(fig, height=420), use_container_width=True)
 
         with st.expander("Analytical read"):
+            harth_sed_n = int(harth_mix[harth_mix['intensity_class']=='sedentary']['n_windows'].sum())
+            harth_sed_pct = int(harth_sed_n / max(prov['windows_harth'], 1) * 100) if prov['windows_harth'] > 0 else 0
             st.markdown(f"""
-HARTH sits at {int(harth_mix[harth_mix['intensity_class']=='sedentary']['n_windows'].sum()/prov['windows_harth']*100)}% sedentary, which tracks with desk-based working-age life.
-HAR70+ is actually *more* active on a percentage basis in the moderate band (mostly walking),
-but has zero vigorous windows.
+HARTH sits at {harth_sed_pct}% sedentary, which tracks with desk-based working-age life. HAR70+ is more active on a percentage basis in the moderate band (mostly walking) but has zero vigorous windows.
 
-The planning implication: HAR70+-targeted recommendations in Mode B max out at the moderate band
-by design, not by arbitrary filter. The data literally doesn't contain vigorous evidence for
-older adults in this study. A recommender that showed running to a 75-year-old would be making
-up numbers.
+The planning implication: HAR70+ recommendations max out at the moderate band by design, not by arbitrary filter. The data does not contain vigorous evidence for older adults in this study. A recommender that showed running to a 75-year-old would be making up numbers.
             """)
 
-    else:  # MET profile
+    else:
         avg_met = all_activities.copy()
         avg_met["display"] = avg_met["activity_name"].map(display_name)
         avg_met = avg_met.sort_values("met_value")
@@ -1337,6 +1227,8 @@ up numbers.
         fig = go.Figure()
         for cohort_label_plot, color in [("HARTH", COLOR_HARTH), ("HAR70+", COLOR_HAR70)]:
             sub = avg_met[avg_met["cohort"] == cohort_label_plot]
+            if sub.empty:
+                continue
             fig.add_trace(go.Scatter(
                 name=cohort_label_plot,
                 x=sub["met_value"], y=sub["display"],
@@ -1363,21 +1255,15 @@ up numbers.
 
         with st.expander("Analytical read"):
             st.markdown("""
-Each bubble is an activity in one cohort. X-axis is the compendium MET value, bubble size is
-how many sensor windows we have for it. The chart makes two things visible at once:
+Each bubble is an activity in one cohort. X-axis is the compendium MET value, bubble size is how many sensor windows we have for it. The chart makes two things visible at once.
 
-Where HAR70+ has coverage (left half of the x-axis, up through walking and stairs) and where it
-doesn't (MET 6+ is HARTH-only). And where confidence is strongest (big bubbles, i.e. sitting and
-walking) versus where we're working with small samples (the tails in both cohorts).
+Where HAR70+ has coverage (left half of the x-axis, up through walking and stairs) and where it doesn't (MET 6+ is HARTH-only). And where confidence is strongest (big bubbles for sitting and walking) versus where samples are small (the tails in both cohorts).
 
-For the jury question about "what would change if the data volume 10x'd": the small bubbles
-would grow proportionally, the left-right asymmetry would stay. You can't cover more activities
-for HAR70+ by collecting more HARTH data.
+For the question "what would change if data volume 10x'd": small bubbles would grow proportionally, the left-right asymmetry would stay. You can't cover more activities for HAR70+ by collecting more HARTH data.
             """)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ---- Weather coverage ----
     st.markdown("#### Weather data: live + archive")
 
     db_dates = load_db_weather_dates()
@@ -1387,92 +1273,72 @@ Weather enters the pipeline from two sources. The <strong style='color:{ACCENT};
 sits in the SQLite database: {len(db_dates)} historical dates from the Open-Meteo archive,
 matching the sessions when sensor subjects were recording. The <strong style='color:{ACCENT};'>live</strong>
 feed hits Open-Meteo's API directly for any date outside the archive, including today's forecast
-and any future date. Both come from the same underlying dataset, one is just cached.
+and any future date.
 </p>
     """, unsafe_allow_html=True)
 
-    # Simple timeline of archive coverage
-    dates_df = pd.DataFrame({
-        "date": pd.to_datetime(db_dates),
-        "value": 1,
-    })
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=dates_df["date"], y=dates_df["value"],
-        mode="markers",
-        marker=dict(size=12, color=ACCENT, line=dict(color=ACCENT, width=1),
-                    symbol="diamond"),
-        hovertemplate="<b>%{x|%B %d, %Y}</b><br>in archive<extra></extra>",
-        showlegend=False,
-    ))
-    fig.update_layout(
-        title="Dates in the weather archive",
-        xaxis_title="Date",
-        yaxis=dict(visible=False),
-        showlegend=False,
-    )
-    st.plotly_chart(style_plot(fig, height=220), use_container_width=True)
+    if db_dates:
+        dates_df = pd.DataFrame({
+            "date": pd.to_datetime(db_dates),
+            "value": 1,
+        })
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates_df["date"], y=dates_df["value"],
+            mode="markers",
+            marker=dict(size=12, color=ACCENT, line=dict(color=ACCENT, width=1),
+                        symbol="diamond"),
+            hovertemplate="<b>%{x|%B %d, %Y}</b><br>in archive<extra></extra>",
+            showlegend=False,
+        ))
+        fig.update_layout(
+            title="Dates in the weather archive",
+            xaxis_title="Date",
+            yaxis=dict(visible=False),
+            showlegend=False,
+        )
+        st.plotly_chart(style_plot(fig, height=220), use_container_width=True)
 
     with st.expander("Why hybrid storage makes sense here"):
         st.markdown(f"""
-The pipeline could have gone one of two ways: pre-cache every plausible date (heavy, wasteful, stale),
-or hit the API every time (slow, API-dependent, no offline capability).
+The pipeline could have gone one of two ways: pre-cache every plausible date (heavy, wasteful, stale), or hit the API every time (slow, API-dependent, no offline capability).
 
-We went hybrid. Dates that matter for joining to the sensor fact table (the {len(db_dates)} sessions
-where HARTH/HAR70+ subjects were recording) get cached in the DB, indexed, and joined at query time.
-Everything else, including future dates for the recommender, hits the Open-Meteo API live with a
-short timeout and graceful fallback.
+We went hybrid. Dates that matter for joining to the sensor fact table (the {len(db_dates)} sessions where HARTH/HAR70+ subjects were recording) get cached in the DB. Everything else, including future dates for the recommender, hits the Open-Meteo API live with a short timeout and graceful fallback.
 
-**Why that's the right trade-off:** the fact-table joins need to be deterministic and fast (sensor-to-weather
-joins happen at pipeline build time, millions of times, and must be reproducible). User-facing recommendations
-need freshness, not determinism, so the API is fine there. Splitting by use case lets each storage layer
-do what it's good at.
+The fact-table joins need to be deterministic and fast. User-facing recommendations need freshness, not determinism, so the API is fine there. Splitting by use case lets each storage layer do what it's good at.
 
-If this data volume 10×'d, the archive portion would stay the same (still just the session dates),
-and the live portion would sit behind a per-user cache with a 1-hour TTL. No architectural change needed.
+If data volume 10x'd, the archive portion would stay the same (still just the session dates), and the live portion would sit behind a per-user cache with a 1-hour TTL. No architectural change needed.
         """)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ---- Data sources + governance summary ----
     st.markdown("#### Data sources and what we assume about them")
 
     with st.expander("HARTH dataset", expanded=False):
         st.markdown(f"""
-**Origin:** Human Activity Recognition Trondheim, collected by NTNU (Norwegian University of Science and Technology).
-Sensor data from back- and thigh-mounted accelerometers, labeled with ground-truth activity from video.
+**Origin:** Human Activity Recognition Trondheim, collected by NTNU. Sensor data from back- and thigh-mounted accelerometers, labeled with ground-truth activity from video.
 
 **Our slice:** {prov['n_harth']} subjects, {prov['windows_harth']:,} 2-second windows across {harth_activities} activities.
 
-**Known limits:** HARTH's subjects are working-age adults, a convenience sample not designed to be
-population-representative. Sedentary activities dominate (reflecting real life), which is a feature for our
-use case but a limitation for gym-specific applications. Activity labels are from video, so label purity is
-high but not perfect.
+**Known limits:** HARTH's subjects are working-age adults, a convenience sample not designed to be population-representative. Sedentary activities dominate, reflecting real life. Activity labels are from video, so label purity is high but not perfect.
         """)
 
     with st.expander("HAR70+ dataset", expanded=False):
         st.markdown(f"""
-**Origin:** Same NTNU group, extended to older adults. Fewer subjects, fewer sessions, narrower activity set
-by design (vigorous activities not collected for safety).
+**Origin:** Same NTNU group, extended to older adults. Fewer subjects, fewer sessions, narrower activity set by design (vigorous activities not collected for safety).
 
 **Our slice:** {prov['n_har70']} subjects, {prov['windows_har70']:,} windows across {har70_activities} activities.
 
-**Known limits:** Smaller sample, narrower activity coverage, and no vigorous-intensity data. The
-{size_ratio:.1f}× size gap with HARTH is the most important caveat when interpreting cross-cohort comparisons.
-We surface this in both the Estimate and Recommend tabs by keeping cohorts separated rather than pooling data.
+**Known limits:** Smaller sample, narrower activity coverage, no vigorous-intensity data. The {size_ratio:.1f}x size gap with HARTH is the most important caveat when interpreting cross-cohort comparisons. We surface this by keeping cohorts separated rather than pooling data.
         """)
 
     with st.expander("Open-Meteo weather", expanded=False):
         st.markdown("""
-**Origin:** Open-Meteo's historical archive + live forecast API. Free, no API key required, attribution requested.
-Centered on Trondheim (lat 63.4305, lon 10.3951).
+**Origin:** Open-Meteo's historical archive + live forecast API. Free, no API key required, attribution requested. Centered on Trondheim (lat 63.4305, lon 10.3951).
 
-**Our usage:** Hourly temperature, precipitation, and weather codes. Aggregated to daily summaries for the
-recommender's weather filter.
+**Our usage:** Hourly temperature, precipitation, and weather codes. Aggregated to daily summaries for the recommender's weather filter.
 
-**Known limits:** Open-Meteo's weather codes follow the WMO standard. Our bad-weather threshold (codes 51-67, 71-77, 80-82, 95-99)
-is a judgment call, not a clinical definition. Someone who enjoys running in light rain would legitimately disagree
-with our filter, which is why outdoor options stay visible (dimmed) rather than disappearing entirely.
+**Known limits:** Open-Meteo's weather codes follow the WMO standard. Our bad-weather threshold (codes 51-67, 71-77, 80-82, 95-99) is a judgment call, not a clinical definition. Someone who enjoys running in light rain would legitimately disagree with our filter, which is why outdoor options stay visible (dimmed) rather than disappearing entirely.
         """)
 
 
